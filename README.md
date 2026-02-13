@@ -1,4 +1,4 @@
-# LoRa Breakout
+# MCI10796 - LoRa Breakout
 
 ![Perspectiva](assets/perspectiva.png)
 
