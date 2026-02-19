@@ -164,23 +164,23 @@ def read_register(address):
     return result[0]
 
 def reset_module():
-    print("🔄 Reiniciando SX1276...")
+    print("Reiniciando SX1276...")
     reset.value(0)
     time.sleep(0.01)
     reset.value(1)
     time.sleep(0.01)
 
 def diagnostico_sx1276():
-    print("🦦 Iniciando diagnóstico SX1276...\n")
+    print("Iniciando diagnóstico SX1276...\n")
     reset_module()
     version = read_register(REG_VERSION)
-    print(f"🔍 RegVersion (0x42): {hex(version)}")
+    print(f"RegVersion (0x42): {hex(version)}")
     if version == 0x12:
-        print("✅ SX1276 detectado correctamente.\n")
+        print("SX1276 detectado correctamente.\n")
     else:
-        print("❌ RegVersion inesperado. Verifica conexiones SPI y alimentación.\n")
+        print("RegVersion inesperado. Verifica conexiones SPI y alimentación.\n")
         return
-    print("🧪 Probando escritura/lectura del registro RegOpMode (0x01)...")
+    print("Probando escritura/lectura del registro RegOpMode (0x01)...")
     test_values = [0x80, 0x81, 0x82]
     success = False
     for val in test_values:
@@ -191,12 +191,312 @@ def diagnostico_sx1276():
         if res == val:
             success = True
     if success:
-        print("✅ Escritura y lectura de RegOpMode funcionan correctamente.\n")
+        print("Escritura y lectura de RegOpMode funcionan correctamente.\n")
     else:
-        print("⚠️ Falló la escritura/lectura de RegOpMode. Revisa MOSI, CS y lógica SPI.\n")
+        print("Falló la escritura/lectura de RegOpMode. Revisa MOSI, CS y lógica SPI.\n")
     irq_flags = read_register(REG_IRQ_FLAGS)
-    print(f"📡 RegIrqFlags (0x12): {bin(irq_flags)}")
-    print("\n🧑‍🔬 Diagnóstico completo.")
+    print(f"RegIrqFlags (0x12): {bin(irq_flags)}")
+    print("\nDiagnóstico completo.")
 
 diagnostico_sx1276()
 ```
+
+
+###Código trasmisor:
+
+Este código enviará un mensaje que diga “12345678” junto a un contador cada 5 segundos.
+
+```python
+from machine import Pin, SPI
+import time
+
+# Pines SPI y control
+spi = SPI(0, baudrate=5000000, polarity=0, phase=0,
+          sck=Pin(2), mosi=Pin(3), miso=Pin(4))
+cs = Pin(5, Pin.OUT)
+reset = Pin(6, Pin.OUT)
+
+# Registros SX1276
+REG_FIFO = 0x00
+REG_OP_MODE = 0x01
+REG_FIFO_ADDR_PTR = 0x0D
+REG_FIFO_TX_BASE_ADDR = 0x0E
+REG_IRQ_FLAGS = 0x12
+REG_PAYLOAD_LENGTH = 0x22
+REG_SYNC_WORD = 0x39
+REG_FRF_MSB = 0x06
+REG_FRF_MID = 0x07
+REG_FRF_LSB = 0x08
+REG_MODEM_CONFIG_1 = 0x1D
+REG_MODEM_CONFIG_2 = 0x1E
+REG_PA_CONFIG = 0x09
+
+MODE_SLEEP = 0x80
+MODE_STDBY = 0x81
+MODE_TX = 0x83
+
+# ------------------------------
+# Funciones SPI (lectura/escritura)
+# ------------------------------
+
+def write_reg(addr, val):
+    cs.value(0)
+    spi.write(bytearray([addr | 0x80, val]))
+    cs.value(1)
+
+def read_reg(addr):
+    cs.value(0)
+    spi.write(bytearray([addr & 0x7F]))
+    result = spi.read(1)
+    cs.value(1)
+    return result[0]
+
+# ------------------------------
+# Reseteo del módulo
+# ------------------------------
+
+def reset_lora():
+    reset.value(0)
+    time.sleep(0.01)
+    reset.value(1)
+    time.sleep(0.01)
+
+# ------------------------------
+# Inicialización del módulo
+# ------------------------------
+
+def init_lora():
+    print("Inicializando transmisor SX1276...")
+    reset_lora()
+    write_reg(REG_OP_MODE, MODE_SLEEP)
+    time.sleep(0.05)
+
+    # Frecuencia: 915 MHz
+    write_reg(REG_FRF_MSB, 0xE4)
+    write_reg(REG_FRF_MID, 0xC0)
+    write_reg(REG_FRF_LSB, 0x00)
+
+    # Configuración LoRa
+    write_reg(REG_SYNC_WORD, 0x12)        # Sync word común
+    write_reg(REG_MODEM_CONFIG_1, 0x72)   # BW=125kHz, CR=4/5
+    write_reg(REG_MODEM_CONFIG_2, 0x74)   # SF=7, CRC ON
+    write_reg(REG_PA_CONFIG, 0x8F)        # Potencia alta segura
+
+    # FIFO TX
+    write_reg(REG_FIFO_TX_BASE_ADDR, 0x80)
+    write_reg(REG_FIFO_ADDR_PTR, 0x80)
+
+    write_reg(REG_OP_MODE, MODE_STDBY)
+    print("Transmisor listo en modo standby.\n")
+
+# ------------------------------
+# Transmisión de un mensaje
+# ------------------------------
+
+def transmit(msg):
+    print(f"Enviando: '{msg}'")
+    write_reg(REG_IRQ_FLAGS, 0xFF)  # Limpia todas las flags
+
+    # Cargar al FIFO
+    payload = bytes(msg, 'utf-8')
+    write_reg(REG_FIFO_ADDR_PTR, 0x80)
+    for b in payload:
+        write_reg(REG_FIFO, b)
+    write_reg(REG_PAYLOAD_LENGTH, len(payload))
+
+    print("Bytes cargados:", list(payload))
+
+    # Confirmar modo standby antes de enviar
+    mode_before = read_reg(REG_OP_MODE)
+    print(f"Modo antes de enviar: {bin(mode_before)}")
+
+    # Iniciar transmisión
+    t0 = time.ticks_ms()
+    write_reg(REG_OP_MODE, MODE_TX)
+
+    # Confirmar que entró en modo TX
+    time.sleep(0.01)
+    mode_tx = read_reg(REG_OP_MODE)
+    print(f"Modo después de MODE_TX: {bin(mode_tx)}")
+
+    # Esperar TxDone
+    timeout_ms = 1000
+    while time.ticks_diff(time.ticks_ms(), t0) < timeout_ms:
+        if read_reg(REG_IRQ_FLAGS) & 0x08:
+            break
+        time.sleep(0.01)
+
+    t1 = time.ticks_diff(time.ticks_ms(), t0)
+    flags = read_reg(REG_IRQ_FLAGS)
+
+    if flags & 0x08:
+        print(f"TxDone recibido en {t1} ms")
+    else:
+        print(f"TxDone NO recibido en {t1} ms")
+    
+    print(f"RegIrqFlags final: {bin(flags)}")
+    write_reg(REG_IRQ_FLAGS, 0xFF)
+    write_reg(REG_OP_MODE, MODE_STDBY)
+    print("Transmisión finalizada.\n")
+
+# ------------------------------
+# Bucle principal
+# ------------------------------
+init_lora()
+contador = 0
+
+while True:
+    mensaje = f"12345678 #{contador}"
+    transmit(mensaje)
+    contador += 1
+    time.sleep(5)
+```
+
+###Código receptor:
+
+Este código recibe la información enviada-
+
+```python
+from machine import Pin, SPI
+import time
+
+# Pines SPI y control
+spi = SPI(0, baudrate=5000000, polarity=0, phase=0,
+          sck=Pin(2), mosi=Pin(3), miso=Pin(4))
+cs = Pin(5, Pin.OUT)
+reset = Pin(6, Pin.OUT)
+dio0 = Pin(7, Pin.IN)
+
+# Registros
+REG_FIFO = 0x00
+REG_OP_MODE = 0x01
+REG_FIFO_ADDR_PTR = 0x0D
+REG_FIFO_RX_BASE_ADDR = 0x0F
+REG_FIFO_RX_CURRENT_ADDR = 0x10
+REG_IRQ_FLAGS = 0x12
+REG_RX_NB_BYTES = 0x13
+REG_PKT_RSSI_VALUE = 0x1A
+REG_PKT_SNR_VALUE = 0x1B
+REG_SYNC_WORD = 0x39
+REG_FRF_MSB = 0x06
+REG_FRF_MID = 0x07
+REG_FRF_LSB = 0x08
+REG_MODEM_CONFIG_1 = 0x1D
+REG_MODEM_CONFIG_2 = 0x1E
+REG_PA_CONFIG = 0x09
+
+MODE_SLEEP = 0x80
+MODE_STDBY = 0x81
+MODE_RXCONTINUOUS = 0x85
+
+# ------------------------------
+# Funciones SPI (lectura/escritura)
+# ------------------------------
+
+def write_reg(addr, val):
+    cs.value(0)
+    spi.write(bytearray([addr | 0x80, val]))
+    cs.value(1)
+
+def read_reg(addr):
+    cs.value(0)
+    spi.write(bytearray([addr & 0x7F]))
+    result = spi.read(1)
+    cs.value(1)
+    return result[0]
+
+# ------------------------------
+# Reseteo del módulo
+# ------------------------------
+
+def reset_lora():
+    reset.value(0)
+    time.sleep(0.01)
+    reset.value(1)
+    time.sleep(0.01)
+
+# ------------------------------
+# Inicialización del módulo
+# ------------------------------
+
+def init_lora():
+    print("Inicializando receptor SX1276...")
+    reset_lora()
+    write_reg(REG_OP_MODE, MODE_SLEEP)
+    time.sleep(0.05)
+
+    # Frecuencia: 915 MHz
+    write_reg(REG_FRF_MSB, 0xE4)
+    write_reg(REG_FRF_MID, 0xC0)
+    write_reg(REG_FRF_LSB, 0x00)
+
+    # Configuración LoRa
+    write_reg(REG_SYNC_WORD, 0x12)
+    write_reg(REG_MODEM_CONFIG_1, 0x72)  # BW 125kHz, CR 4/5
+    write_reg(REG_MODEM_CONFIG_2, 0x74)  # SF7, CRC ON
+
+    # FIFO
+    write_reg(REG_FIFO_RX_BASE_ADDR, 0x00)
+    write_reg(REG_FIFO_ADDR_PTR, 0x00)
+
+    # Activar modo recepción continua
+    write_reg(REG_OP_MODE, MODE_RXCONTINUOUS)
+    print("Receptor en modo RxContinuous.\n")
+
+# ------------------------------
+# Recepción de un paquete
+# ------------------------------
+
+def handle_packet():
+    flags = read_reg(REG_IRQ_FLAGS)
+
+    if flags & 0x40:  # RxDone
+        print("\nPaquete recibido (RxDone)")
+        crc_error = bool(flags & 0x20)
+
+        if crc_error:
+            print("Error de CRC. Paquete descartado.")
+        else:
+            current_addr = read_reg(REG_FIFO_RX_CURRENT_ADDR)
+            write_reg(REG_FIFO_ADDR_PTR, current_addr)
+            length = read_reg(REG_RX_NB_BYTES)
+            print(f"Tamaño del paquete: {length} bytes")
+
+            data = bytearray()
+            for _ in range(length):
+                data.append(read_reg(REG_FIFO))
+
+            print("Bytes crudos:", list(data))
+            try:
+                decoded = data.decode('utf-8')
+                print(f"Payload (texto): {decoded}")
+            except:
+                print("No se pudo decodificar como texto.")
+
+            rssi = read_reg(REG_PKT_RSSI_VALUE)
+            snr = read_reg(REG_PKT_SNR_VALUE)
+            if snr > 127:
+                snr = ((~snr + 1) & 0xFF) * -0.25
+            else:
+                snr = snr * 0.25
+            rssi_dbm = -157 + rssi + 137
+            print(f"RSSI: {rssi_dbm} dBm | SNR: {snr:.2f} dB")
+
+    elif flags:
+        print(f"IRQ Flags inesperadas: {bin(flags)}")
+
+    # Limpiar todas las flags
+    write_reg(REG_IRQ_FLAGS, 0xFF)
+
+# ------------------------------
+# Bucle principal
+# ------------------------------
+
+init_lora()
+while True:
+    if dio0.value():
+        handle_packet()
+    time.sleep(0.01)
+```
+
+
