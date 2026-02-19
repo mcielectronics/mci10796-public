@@ -202,7 +202,7 @@ diagnostico_sx1276()
 ```
 
 
-###Código trasmisor:
+### Código trasmisor:
 
 Este código enviará un mensaje que diga “12345678” junto a un contador cada 5 segundos.
 
@@ -352,7 +352,7 @@ while True:
     time.sleep(5)
 ```
 
-###Código receptor:
+### Código receptor:
 
 Este código recibe la información enviada-
 
